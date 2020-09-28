@@ -1,1 +1,7 @@
+# Identification of a Novel Group of Cancer Dependencies
 
+In this repo a cleaned-up version of the code and ssupplementary files exists, belonging to the work in the master thesis: _Identifying a Novel Class of Cancer Dependencies: Paralog Genes Interacting with Common Essentials_. There are two sections to the code, where the files in ```src/novel_gene_selection``` belong to the identification of the novel group of dependencies, and the files in```src/nxt1_in_neuroblastoma``` belong to the analysis of various data (ChIPseq, RNAseq, etc.) on _NXT1_ in the neuroblastoma line Kelly.
+
+For the former, all code is in Jupyter notebooks and should be run following the indicated sequence (```1_...```, ```2_...```, etc.). All conda packages are available from ```src/novel_gene_selection/spec-list.txt```. Additional packages can be installed with pip (from the conda environment) and include the packages ```taigapy```, ```venn``` and ```matplotlib_venn```. To setup taiga you need to request a taiga token (requires a Broad ID). Alternatively all DepMap files can be retrieved from depmap.org and loaded individually as dataframes.
+
+The second part is written in R notebooks which can be easily opened using RStudio. Here the first file is used to define and analyse the _NXT1_ binding locations and the following gene groups. The second file focusses on the relation of these gene groups to gene expression. All packages can be installed from Bioconductor or CRAN using the standard way. 
