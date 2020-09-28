@@ -1,0 +1,339 @@
+---
+title: "NXT1 ChIPseq Analysis"
+output: html_notebook
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(ChIPpeakAnno)
+library(ChIPseeker)
+library(org.Hs.eg.db)
+library(TxDb.Hsapiens.UCSC.hg19.knownGene)
+library(R.utils)
+library(ggimage)
+library(msigdbr)
+library(clusterProfiler)
+library(cowplot)
+library(ggplot2)
+library(reshape2)
+library(DescTools)
+library(ComplexHeatmap)
+library(tidyverse)
+library(gUtils)
+library(plyr)
+```
+
+# Setup dirs
+```{r}
+main_dir =  # Setup your base dir
+nxt1_peaks_dir = file.path(main_dir, )  # Extend to the ChIPseq dir
+crc_peaks_dir = file.path(main_dir, )  # Idem for the CRC ChIPseq data
+results_dir = file.path(main_dir, 'my_analysis', 'results')  # Setup the output dir
+```
+
+# Load NXT1 peaks
+```{r}
+DMSO_peaks_file = file.path(nxt1_peaks_dir, 'MACS2', 'output200303', 'CM_KELLY_NXT1_DMSO_HA_200303_peaks.blacklist_and_input_filt.bed')
+dTAG_peaks_file = file.path(nxt1_peaks_dir, 'MACS2', 'output200303', 'CM_KELLY_NXT1_dTAG13_HA_200303_peaks.blacklist_and_input_filt.bed')
+
+DMSO_peaks = toGRanges(DMSO_peaks_file, format="BED", header=FALSE) 
+dTAG_peaks = toGRanges(dTAG_peaks_file, format="BED", header=FALSE)
+```
+
+```{r}
+overlap = findOverlapsOfPeaks(DMSO_peaks, dTAG_peaks)
+makeVennDiagram(overlap, fill=c("Blue", "Red"),
+                cat.just=list(c(.3,-2), c(.8,-1)))
+```
+
+# Annotate peaks
+```{r}
+annotate_and_plot = function(peaks, file_name, tssRegion=c(-3000, 3000), TxDb=TxDb.Hsapiens.UCSC.hg19.knownGene, annoDb="org.Hs.eg.db") {
+  annotated_peaks = annotatePeak(peaks, tssRegion=tssRegion,
+                                 TxDb=TxDb, annoDb=annoDb)
+  annotated_peaks_file = file.path(results_dir, 'ChIPseeker', file_name)
+  write.table(annotated_peaks, file=annotated_peaks_file, sep='\t')
+  plotAnnoPie(annotated_peaks)
+  return(as.data.frame(annotated_peaks@anno))
+}
+```
+
+```{r}
+DMSO_genes = annotate_and_plot(DMSO_peaks, 'DMSO_peaks-annotated.csv')
+```
+
+# Extract promoter peaks
+```{r}
+DMSO_promoter_genes = DMSO_genes %>%
+                      rownames_to_column("peakNames") %>%
+                      filter(annotation %in% c("Promoter (<=1kb)",
+                                               "Promoter (1-2kb)",
+                                               "Promoter (2-3kb)"))
+write.table(DMSO_promoter_genes, file.path(results_dir, 'ChIPseeker', 'DMSO_promoter_peaks-annotated.csv'), sep="\t")
+DMSO_promoter_peaks = DMSO_peaks[DMSO_promoter_genes$peakNames]
+```
+
+```{r}
+DMSO_only_peaks = overlap$peaklist$DMSO_peaks
+DMSO_only_genes = annotate_and_plot(DMSO_only_peaks, 'DMSO_only_peaks-annotated.csv')
+```
+
+```{r}
+overlap_peaks = overlap$peaklist$`DMSO_peaks///dTAG_peaks`
+overlap_genes = annotate_and_plot(overlap_peaks, 'overlap_peaks-annotated.csv')
+```
+
+```{r}
+dTAG_only_peaks = overlap$peaklist$dTAG_peaks
+dTAG_genes = annotate_and_plot(dTAG_only_peaks, 'dTAG_only_peaks-annotated.csv')
+```
+
+```{r}
+dTAG_genes = annotate_and_plot(dTAG_peaks, 'dTAG_peaks-annotated.csv')
+```
+
+# Perform GSEA
+```{r}
+enrich_and_plot = function(geneIDs, file_name, enrichment_category) {
+  m_t2g = msigdbr(species="Homo sapiens", category="C2") %>% dplyr::select(gs_name, entrez_gene) %>% as.data.frame()
+  em = enricher(geneIDs, TERM2GENE=m_t2g)
+  DMSO_enrichments_file = file.path(results_dir, 'enrichments', file_name)
+  write.table(em, DMSO_enrichments_file, sep='\t')
+  return(dotplot(em))
+}
+```
+
+```{r, fig.width=9}
+enrich_and_plot(DMSO_promoter_genes$geneId, 'DMSO_only_Promoter_HALMARK_enrichments.csv', 'H')
+enrich_and_plot(DMSO_promoter_genes$geneId, 'DMSO_only_Promoter_C5_enrichments.csv', 'C5')
+```
+
+```{r, fig.width=14}
+enrich_and_plot(DMSO_promoter_genes$geneId, 'DMSO_only_Promoter_C2_enrichments.csv', 'C2')
+```
+
+# Analyse overlap CRC members
+```{r}
+GATA3_peaks   = file.path(crc_peaks_dir, 'GSM2486157_Kelly_GATA3_peaks.bed') %>% toGRanges(format="BED", header=FALSE)
+HAND2_peaks   = file.path(crc_peaks_dir, 'GSM2486166_Kelly_HAND2_peaks.bed') %>% toGRanges(format="BED", header=FALSE)
+ISL1_peaks    = file.path(crc_peaks_dir, 'GSM2486162_Kelly_ISL1_peaks.bed') %>% toGRanges(format="BED", header=FALSE)
+MYCN_peaks    = file.path(crc_peaks_dir, 'GSM2915909_Kelly_MYCN_peaks.bed') %>% toGRanges(format="BED", header=FALSE)
+PHOX2B_peaks  = file.path(crc_peaks_dir, 'GSM2915910_Kelly_PHOX2B_peaks.bed') %>% toGRanges(format="BED", header=FALSE)
+TBX2_peaks    = file.path(crc_peaks_dir, 'GSM2915911_Kelly_TBX2_peaks.bed') %>% toGRanges(format="BED", header=FALSE)
+
+H3K27_peaks   = file.path(local_files, 'GSM1532401_kelly_DMSO_H3K27ac_peaks.bed') %>% toGRanges(format="BED", header=F)
+
+all_CRC_peaks = suppressWarnings(grbind(GATA3_peaks, HAND2_peaks, ISL1_peaks, MYCN_peaks, PHOX2B_peaks, TBX2_peaks))
+```
+
+```{r}
+find_peak_overlap_and_plot = function(other_peaks, color="Blue") {
+  overlap = findOverlapsOfPeaks(DMSO_peaks, DMSO_promoter_peaks, other_peaks)
+  makeVennDiagram(overlap, NameOfPeaks=c("NXT1_peaks", "NXT1_promoter_peaks", deparse(substitute(other_peaks))),
+                  fill=c("Red", "DarkRed", color), cat.pos=c(-30, 30, 145), cat.dist=.06)
+  return(overlap)
+}
+```
+
+```{r}
+H3K27_overlap = find_peak_overlap_and_plot(H3K27_peaks, "Gold")
+
+GATA3_overlap = find_peak_overlap_and_plot(GATA3_peaks, "DarkGreen")
+
+HAND2_overlap = find_peak_overlap_and_plot(HAND2_peaks, "Cyan")
+
+ISL1_overlap = find_peak_overlap_and_plot(ISL1_peaks, "Yellow")
+
+MYCN_overlap = find_peak_overlap_and_plot(MYCN_peaks, "Green")
+
+PHOX2B_overlap = find_peak_overlap_and_plot(PHOX2B_peaks, "Blue")
+
+TBX2_overlap = find_peak_overlap_and_plot(TBX2_peaks, "Purple")
+```
+
+```{r}
+peaklist = list(
+  "NXT1" = DMSO_peaks,
+  "NXT1 (promoter)" = DMSO_promoter_peaks,
+  "GATA3" = GATA3_peaks,
+  "HAND2" = HAND2_peaks,
+  "ISL1" = ISL1_peaks,
+  "MYCN" = MYCN_peaks,
+  "PHOX2B" = PHOX2B_peaks,
+  "TBX2" = TBX2_peaks
+)
+nxt1_crc_combinations = make_comb_mat(peaklist, value_fun=length)
+```
+
+```{r, fig.width=12, fig.height=6}
+m = nxt1_crc_combinations
+m_sel = m[
+  comb_size(m) > 20 &
+  comb_degree(m) > 1 &
+  comb_name(m) %>% strsplit("") %>% lapply(function(f) {f[1] == 1 | f[2] == 1}) %>% unlist()
+  ]
+upset_plot = UpSet(m_sel, comb_order=order(-comb_size(m_sel)), set_order=names(peaklist))
+upset_plot
+```
+
+# Extract and analyse peak groups
+# A.
+```{r, fig.width=12, fig.height=4}
+MYCN_overlap_peaks = MYCN_overlap$peaklist$`DMSO_peaks///DMSO_promoter_peaks///other_peaks`
+
+MYCN_overlap_path = file.path(results_dir, 'peak_overlaps', 'MYCN_overlap.bed')
+write.table(MYCN_overlap_peaks, MYCN_overlap_path, sep='\t', row.names=FALSE, quote=FALSE)
+MYCN_overlap_genes = annotate_and_plot(MYCN_overlap_peaks, file_name="MYCN_overlap-annotated.csv")
+
+# p1 = enrich_and_plot(MYCN_overlap_genes$geneId, 'MYCN_overlap_HALMARK_enrichments.csv', 'H')
+p1 = enrich_and_plot(MYCN_overlap_genes$geneId, 'MYCN_overlap_C2_enrichments.csv', 'C2')
+p2 = enrich_and_plot(MYCN_overlap_genes$geneId, 'MYCN_overlap_C5_enrichments.csv', 'C5')
+
+grid.arrange(p1, p2, ncol=2)
+```
+
+# B.
+```{r, fig.width=12, fig.height=4}
+non_MYCN_promoter_overlap_peaks = MYCN_overlap$peaklist$`DMSO_peaks///DMSO_promoter_peaks`
+
+non_MYCN_promoter_overlap_path = file.path(results_dir, 'peak_overlaps', 'non_MYCN_promoter_overlap.bed')
+write.table(non_MYCN_promoter_overlap_peaks, non_MYCN_promoter_overlap_path, sep='\t', row.names=FALSE, quote=FALSE)
+non_MYCN_promoter_overlap_genes = annotate_and_plot(non_MYCN_promoter_overlap_peaks, file_name="non_MYCN_promoter_overlap-annotated.csv")
+
+# p1 = enrich_and_plot(non_MYCN_promoter_overlap_genes$geneId, 'non_MYCN_promoter_overlap_HALMARK_enrichments.csv', 'H') + theme(axis.text.x=element_text(size = 10), axis.text.y=element_text(size = 15))
+p1 = enrich_and_plot(non_MYCN_promoter_overlap_genes$geneId, 'non_MYCN_promoter_overlap_C2_enrichments.csv', 'C2')
+p2 = enrich_and_plot(non_MYCN_promoter_overlap_genes$geneId, 'non_MYCN_promoter_overlap_C5_enrichments.csv', 'C5')
+
+grid.arrange(p1, p2, ncol=2)
+```
+
+# C.
+```{r, fig.width=12, fig.height=4}
+total_CRC_overlap_peaks = extract_comb(m, "10111111")
+
+total_CRC_overlap_path = file.path(results_dir, 'peak_overlaps', 'total_CRC_overlap.bed')
+write.table(total_CRC_overlap_peaks, total_CRC_overlap_path, sep='\t', row.names=FALSE, quote=FALSE)
+total_CRC_overlap_genes = annotate_and_plot(total_CRC_overlap_peaks, file_name="total_CRC_overlap-annotated.csv")
+
+# enrich_and_plot(total_CRC_overlap_genes$geneId, 'total_CRC_overlap_HALMARK_enrichments.csv', 'H')
+p1 = enrich_and_plot(total_CRC_overlap_genes$geneId, 'total_CRC_overlap_C2_enrichments.csv', 'C2')
+p2 = enrich_and_plot(total_CRC_overlap_genes$geneId, 'total_CRC_overlap_C5_enrichments.csv', 'C5')
+
+grid.arrange(p1, p2, ncol=2)
+```
+
+# D.
+```{r, fig.width=12, fig.height=4}
+non_crc_overlap_peaks = find_peak_overlap_and_plot(total_CRC_overlap_peaks, "gold")
+non_crc_overlap_peaks = non_crc_overlap_peaks$peaklist$DMSO_peaks
+
+non_CRC_overlap_genes = annotate_and_plot(non_CRC_overlap_peaks, file_name="non_CRC_overlap-annotated.csv")
+
+# enrich_and_plot(non_CRC_overlap_genes$geneId, 'non_CRC_overlap_HALMARK_enrichments.csv', 'H')
+p1 = enrich_and_plot(non_CRC_overlap_genes$geneId, 'non_CRC_overlap_C2_enrichments.csv', 'C2')
+p2 = enrich_and_plot(non_CRC_overlap_genes$geneId, 'non_CRC_overlap_C5_enrichments.csv', 'C5')
+
+grid.arrange(p1, p2, ncol=2)
+```
+
+```{r}
+overlap = findOverlapsOfPeaks(DMSO_peaks, DMSO_promoter_peaks, total_CRC_overlap_peaks, MYCN_peaks)
+makeVennDiagram(overlap, NameOfPeaks=c("NXT1_peaks", "NXT1_promoter_peaks", "all_CRC_peaks", "MYCN_peaks"),
+                fill=c("Red", "DarkRed", "royalblue", "Green"))
+```
+
+# Perform GSEA on the differentially expressed genes
+```{r}
+expression_selection_dir = file.path(results_dir, "expression_selection")
+```
+
+```{r, fig.width=10}
+NXT1_DEseq_induced_genes = read.table(file.path(expression_selection_dir, "nxt1_bound_DEseq_induced.tsv"), sep="\t") %>% lapply(as.character)
+NXT1_DEseq_induced_peaks = DMSO_peaks[row.names(DMSO_genes[which(DMSO_genes$SYMBOL %in% NXT1_DEseq_induced_genes$V1),]),]
+
+NXT1_DEseq_induced_path = file.path(results_dir, 'peak_overlaps', 'NXT1_DEseq_induced.bed')
+write.table(NXT1_DEseq_induced_peaks, NXT1_DEseq_induced_path, sep='\t', row.names=FALSE, quote=FALSE)
+NXT1_DEseq_induced_genes = annotate_and_plot(NXT1_DEseq_induced_peaks, file_name="NXT1_DEseq_induced-annotated.csv")
+
+enrich_and_plot(NXT1_DEseq_induced_genes$geneId, 'NXT1_DEseq_induced_HALMARK_enrichments.csv', 'H')
+enrich_and_plot(NXT1_DEseq_induced_genes$geneId, 'NXT1_DEseq_induced_C2_enrichments.csv', 'C2')
+enrich_and_plot(NXT1_DEseq_induced_genes$geneId, 'NXT1_DEseq_induced_C5_enrichments.csv', 'C5')
+```
+
+```{r, fig.width=9}
+NXT1_DEseq_repressed_genes = read.table(file.path(expression_selection_dir, "nxt1_bound_DEseq_repressed.tsv"), sep="\t") %>% lapply(as.character)
+NXT1_DEseq_repressed_peaks = DMSO_peaks[row.names(DMSO_genes[which(DMSO_genes$SYMBOL %in% NXT1_DEseq_repressed_genes$V1),]),]
+
+NXT1_DEseq_repressed_path = file.path(results_dir, 'peak_overlaps', 'NXT1_DEseq_repressed.bed')
+write.table(NXT1_DEseq_repressed_peaks, NXT1_DEseq_repressed_path, sep='\t', row.names=FALSE, quote=FALSE)
+NXT1_DEseq_repressed_genes = annotate_and_plot(NXT1_DEseq_repressed_peaks, file_name="NXT1_DEseq_repressed-annotated.csv")
+
+enrich_and_plot(NXT1_DEseq_repressed_genes$geneId, 'NXT1_DEseq_repressed_HALMARK_enrichments.csv', 'H')
+enrich_and_plot(NXT1_DEseq_repressed_genes$geneId, 'NXT1_DEseq_repressed_C2_enrichments.csv', 'C2')
+enrich_and_plot(NXT1_DEseq_repressed_genes$geneId, 'NXT1_DEseq_repressed_C5_enrichments.csv', 'C5')
+```
+
+```{r, fig.width=11}
+NXT1_MS_induced_genes = read.table(file.path(expression_selection_dir, "nxt1_bound_MS_induced.tsv"), sep="\t") %>% lapply(as.character)
+NXT1_MS_induced_peaks = DMSO_peaks[row.names(DMSO_genes[which(DMSO_genes$SYMBOL %in% NXT1_MS_induced_genes$V1),]),]
+
+NXT1_MS_induced_path = file.path(results_dir, 'peak_overlaps', 'NXT1_MS_induced.bed')
+write.table(NXT1_MS_induced_peaks, NXT1_MS_induced_path, sep='\t', row.names=FALSE, quote=FALSE)
+NXT1_MS_induced_genes = annotate_and_plot(NXT1_MS_induced_peaks, file_name="NXT1_MS_induced-annotated.csv")
+
+enrich_and_plot(NXT1_MS_induced_genes$geneId, 'NXT1_MS_induced_HALMARK_enrichments.csv', 'H')
+enrich_and_plot(NXT1_MS_induced_genes$geneId, 'NXT1_MS_induced_C2_enrichments.csv', 'C2')
+enrich_and_plot(NXT1_MS_induced_genes$geneId, 'NXT1_MS_induced_C5_enrichments.csv', 'C5')
+```
+
+```{r, fig.width=9}
+NXT1_MS_repressed_genes = read.table(file.path(expression_selection_dir, "nxt1_bound_MS_repressed.tsv"), sep="\t") %>% lapply(as.character)
+NXT1_MS_repressed_peaks = DMSO_peaks[row.names(DMSO_genes[which(DMSO_genes$SYMBOL %in% NXT1_MS_repressed_genes$V1),]),]
+
+NXT1_MS_repressed_path = file.path(results_dir, 'peak_overlaps', 'NXT1_MS_repressed.bed')
+write.table(NXT1_MS_repressed_peaks, NXT1_MS_repressed_path, sep='\t', row.names=FALSE, quote=FALSE)
+NXT1_MS_repressed_genes = annotate_and_plot(NXT1_MS_repressed_peaks, file_name="NXT1_MS_repressed-annotated.csv")
+
+enrich_and_plot(NXT1_MS_repressed_genes$geneId, 'NXT1_MS_repressed_HALMARK_enrichments.csv', 'H')
+enrich_and_plot(NXT1_MS_repressed_genes$geneId, 'NXT1_MS_repressed_C2_enrichments.csv', 'C2')
+enrich_and_plot(NXT1_MS_repressed_genes$geneId, 'NXT1_MS_repressed_C5_enrichments.csv', 'C5')
+```
+
+```{r, fig.width=10}
+NXT1_CRC_DEseq_induced_genes = read.table(file.path(expression_selection_dir, "nxt1_crc_DEseq_induced.tsv"), sep="\t") %>% lapply(as.character)
+NXT1_CRC_DEseq_induced_genes = DMSO_genes[which(DMSO_genes$SYMBOL %in% NXT1_CRC_DEseq_induced_genes$V1), "geneId"]
+
+# enrich_and_plot(NXT1_CRC_DEseq_induced_genes, 'NXT1_CRC_DEseq_induced_HALMARK_enrichments.csv', 'H')
+enrich_and_plot(NXT1_CRC_DEseq_induced_genes, 'NXT1_CRC_DEseq_induced_C2_enrichments.csv', 'C2')
+enrich_and_plot(NXT1_CRC_DEseq_induced_genes, 'NXT1_CRC_DEseq_induced_C5_enrichments.csv', 'C5')
+```
+
+```{r, fig.width=9}
+NXT1_CRC_DEseq_repressed_genes = read.table(file.path(expression_selection_dir, "nxt1_crc_DEseq_repressed.tsv"), sep="\t") %>% lapply(as.character)
+NXT1_CRC_DEseq_repressed_genes = DMSO_genes[which(DMSO_genes$SYMBOL %in% NXT1_CRC_DEseq_repressed_genes$V1), "geneId"]
+
+enrich_and_plot(NXT1_CRC_DEseq_repressed_genes, 'NXT1_CRC_DEseq_repressed_HALMARK_enrichments.csv', 'H')
+enrich_and_plot(NXT1_CRC_DEseq_repressed_genes, 'NXT1_CRC_DEseq_repressed_C2_enrichments.csv', 'C2')
+enrich_and_plot(NXT1_CRC_DEseq_repressed_genes, 'NXT1_CRC_DEseq_repressed_C5_enrichments.csv', 'C5')
+```
+
+```{r, fig.width=12}
+NXT1_CRC_MS_induced_genes = read.table(file.path(expression_selection_dir, "nxt1_crc_MS_induced.tsv"), sep="\t") %>% lapply(as.character)
+NXT1_CRC_MS_induced_genes = DMSO_genes[which(DMSO_genes$SYMBOL %in% NXT1_CRC_MS_induced_genes$V1), "geneId"]
+
+# enrich_and_plot(NXT1_CRC_MS_induced_genes, 'NXT1_CRC_MS_induced_HALMARK_enrichments.csv', 'H')
+enrich_and_plot(NXT1_CRC_MS_induced_genes, 'NXT1_CRC_MS_induced_C2_enrichments.csv', 'C2')
+enrich_and_plot(NXT1_CRC_MS_induced_genes, 'NXT1_CRC_MS_induced_C5_enrichments.csv', 'C5')
+```
+
+```{r, fig.width=8}
+NXT1_CRC_MS_repressed_genes = read.table(file.path(expression_selection_dir, "nxt1_crc_MS_repressed.tsv"), sep="\t") %>% lapply(as.character)
+NXT1_CRC_MS_repressed_genes = DMSO_genes[which(DMSO_genes$SYMBOL %in% NXT1_CRC_MS_repressed_genes$V1), "geneId"]
+
+# enrich_and_plot(NXT1_CRC_MS_repressed_genes, 'NXT1_CRC_MS_repressed_HALMARK_enrichments.csv', 'H')
+enrich_and_plot(NXT1_CRC_MS_repressed_genes, 'NXT1_CRC_MS_repressed_C2_enrichments.csv', 'C2')
+enrich_and_plot(NXT1_CRC_MS_repressed_genes, 'NXT1_CRC_MS_repressed_C5_enrichments.csv', 'C5')
+```
