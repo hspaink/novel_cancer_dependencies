@@ -1,0 +1,288 @@
+---
+title: "Gene Expression Effect"
+output: html_notebook
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+# Lib cleanup may be necessary 
+library(R.utils)
+library(reshape2)
+library(DescTools)
+library(Category)
+library(org.Hs.eg.db)
+library(EnhancedVolcano)
+library(gridExtra)
+library(grid)
+library(dplyr)
+library(tidyr)
+library(tidyverse)
+library(plyr)
+library(seqinr)
+library(data.table)
+```
+
+# Setup dirs
+```{r}
+main_dir =  # Setup your base dir
+
+# Setup the RNAseq data dirs
+WC_DEseq_dir = file.path(main_dir, "expression_data", 'WC_DMSO.AB_dTAG.AB_b37', 'DEG_DESeq2', 'WC_DMSO.AB_dTAG.AB_b37_DESeq2', 'tables')
+Cyt_DEseq_dir = file.path(main_dir, "expression_data", 'Cyt_DMSO_dTAG_b37', 'DEG_DESeq2', 'Cyt_DMSO_dTAG_b37_DESeq2', 'tables')
+Nucl_DEseq_dir = file.path(main_dir, "expression_data", 'Nucl_DMSO_dTAG_b37', 'DEG_DESeq2', 'Nucl_DMSO_dTAG_b37_DESeq2', 'tables')
+
+# Setup proteomics data dir
+mass_spec_dir = file.path(main_dir, "expression_data", "NXT1_mass_spec")
+
+# Results dir
+results_dir = file.path(main_dir, 'my_analysis', 'results')
+
+# Output of differentially expressed gene groups
+expression_selection_dir = file.path(results_dir, "expression_selection")
+```
+
+```{r}
+LABEL_NAMES = list(A="A. NXT1-MYCN promoter peaks",
+                   B="B. Other NXT1 promoter peaks",
+                   C="C. NXT1-CRC peaks",
+                   D="D. Other NXT1 peaks",
+                   other="not NXT1 bound genes")
+
+# Genes of interest to mark in plot:
+GOI = c("NXT1", "GATA3", "HAND2", "ISL1", "MYCN", "PHOX2B", "TBX2", "NXT2", "NXF1")
+```
+
+# ```{r}
+# # Tested across all (wc, nucl, cyt) and gc fields are identical in each
+# WC_gene_info = read.table(file.path(main_dir, "expression_data", "WC_DMSO.AB_dTAG.AB_b37", "counts", "WC_DMSO.AB_dTAG.AB_b37_feature.txt"), sep="\t", header=TRUE)
+# rownames(WC_gene_info) = WC_gene_info$Gene
+# WC_gene_info
+# ```
+
+# Load DEseq data
+```{r}
+MIN_CNT = 5
+WC_DEseq_results = read.table(file.path(WC_DEseq_dir, 'dTAGvsDMSO.complete.txt'), sep='\t', header=TRUE) %>%
+                   filter(norm.DMSO_WholeCell_A > MIN_CNT & norm.DMSO_WholeCell_B > MIN_CNT &
+                          norm.dTAG_WholeCell_A > MIN_CNT & norm.dTAG_WholeCell_B > MIN_CNT) %>%
+                   separate(Id, c("gene_name", "gene_Id"), sep="_(?!.*_)", convert=TRUE, extra="merge", remove=FALSE)
+
+Cyt_DEseq_results = read.table(file.path(Cyt_DEseq_dir, 'dTAGvsDMSO.complete.txt'), sep='\t', header=TRUE) %>%
+                    filter(norm.DMSO_Cytoplasmic_A > MIN_CNT & norm.DMSO_Cytoplasmic_B > MIN_CNT &
+                           norm.DMSO_Cytoplasmic_C > MIN_CNT & norm.dTAG_Cytoplasmic_A > MIN_CNT &
+                           norm.dTAG_Cytoplasmic_B > MIN_CNT & norm.dTAG_Cytoplasmic_C > MIN_CNT) %>%
+                    separate(Id, c("gene_name", "gene_Id"), sep="_(?!.*_)", convert=TRUE, extra="merge", remove=FALSE)
+
+Nucl_DEseq_results = read.table(file.path(Nucl_DEseq_dir, 'dTAGvsDMSO.complete.txt'), sep='\t', header=TRUE) %>%
+                     filter(norm.DMSO_Nuclear_A > MIN_CNT & norm.DMSO_Nuclear_B > MIN_CNT &
+                            norm.DMSO_Nuclear_C > MIN_CNT & norm.dTAG_Nuclear_A > MIN_CNT &
+                            norm.dTAG_Nuclear_B > MIN_CNT & norm.dTAG_Nuclear_C > MIN_CNT) %>%
+                     separate(Id, c("gene_name", "gene_Id"), sep="_(?!.*_)", convert=TRUE, extra="merge", remove=FALSE)
+```
+
+# Load proteomics data
+```{r}
+mass_spec_2hr  = read.table(file.path(mass_spec_dir, "2hr_vs_DMSO.csv"), sep="\t", header=TRUE) %>%
+                 mutate(pval = 10 ^ -`p.Value...Log10.`, Gene.symbol = as.character(Gene.symbol))
+
+mass_spec_6hr  = read.table(file.path(mass_spec_dir, "6hr_vs_DMSO.csv"), sep="\t", header=TRUE) %>%
+                 mutate(pval = 10 ^ -`p.Value...Log10.`, Gene.symbol = as.character(Gene.symbol))
+
+mass_spec_24hr = read.table(file.path(mass_spec_dir, "24hr_vs_DMSO.csv"), sep="\t", header=TRUE) %>%
+                 mutate(pval = 10 ^ -`p.Value...Log10.`, Gene.symbol = as.character(Gene.symbol))
+```
+
+# Load gene sets to color in plots
+```{r}
+nxt1_bound_genes = read.table(file.path(results_dir, 'ChIPseeker', 'DMSO_peaks-annotated.csv'), sep="\t")$SYMBOL
+nxt1_promoter_genes = read.table(file.path(results_dir, 'ChIPseeker', 'DMSO_promoter_peaks-annotated.csv'), sep="\t")$SYMBOL
+
+dtag_overlap_genes = read.table(file.path(results_dir, 'ChIPseeker', "overlap_peaks-annotated.csv"), sep="\t")$SYMBOL
+
+# Note: the annotated peaks where the genes don't correspond to ones in the actual NXT1 bound genes are removed. 
+# These were found through finding overlapping peaks, where the peak region is extended if two peaks are not exactly the same. 
+# This causes the annotation to be slightly off!
+
+# A:
+nxt1_mycn_promoter_genes = read.table(file.path(results_dir, 'ChIPseeker', "MYCN_overlap-annotated.csv"), sep="\t")$SYMBOL %>% intersect(nxt1_bound_genes)  
+# B:
+nxt1_only_promoter_genes = setdiff(nxt1_promoter_genes, nxt1_mycn_promoter_genes)
+# C:
+nxt1_crc_genes = read.table(file.path(results_dir, 'ChIPseeker', "total_CRC_overlap-annotated.csv"), sep="\t")$SYMBOL
+# D:
+nxt1_only_genes = setdiff(nxt1_bound_genes, nxt1_promoter_genes) %>% setdiff(nxt1_crc_genes)
+```
+
+# Extract induced and repressed genes from the NXT1 bound gene groups
+```{r}
+nxt1_bound_DEseq_induced = WC_DEseq_results[which(WC_DEseq_results$log2FoldChange > 0 & WC_DEseq_results$padj < 0.05 & WC_DEseq_results$gene_name %in% nxt1_bound_genes), "gene_name"]
+nxt1_bound_DEseq_repressed = WC_DEseq_results[which(WC_DEseq_results$log2FoldChange < 0 & WC_DEseq_results$padj < 0.05 & WC_DEseq_results$gene_name %in% nxt1_bound_genes), "gene_name"]
+
+nxt1_bound_MS_induced = mass_spec_24hr[which(mass_spec_24hr$Fold.change..Log2. > 0 & mass_spec_24hr$pval < 0.05 & mass_spec_24hr$Gene.symbol %in% nxt1_bound_genes), "Gene.symbol"]
+nxt1_bound_MS_repressed = mass_spec_24hr[which(mass_spec_24hr$Fold.change..Log2. < 0 & mass_spec_24hr$pval < 0.05 & mass_spec_24hr$Gene.symbol %in% nxt1_bound_genes), "Gene.symbol"]
+
+write.table(nxt1_bound_DEseq_induced, file.path(expression_selection_dir, "nxt1_bound_DEseq_induced.tsv"), sep="\t", row.names=FALSE, col.names=FALSE)
+write.table(nxt1_bound_DEseq_repressed, file.path(expression_selection_dir, "nxt1_bound_DEseq_repressed.tsv"), sep="\t", row.names=FALSE, col.names=FALSE)
+write.table(nxt1_bound_MS_induced, file.path(expression_selection_dir, "nxt1_bound_MS_induced.tsv"), sep="\t", row.names=FALSE, col.names=FALSE)
+write.table(nxt1_bound_MS_repressed, file.path(expression_selection_dir, "nxt1_bound_MS_repressed.tsv"), sep="\t", row.names=FALSE, col.names=FALSE)
+```
+
+```{r}
+nxt1_crc_DEseq_induced = WC_DEseq_results[which(WC_DEseq_results$log2FoldChange > 0 & WC_DEseq_results$padj < 0.05 & WC_DEseq_results$gene_name %in% nxt1_crc_genes), "gene_name"]
+nxt1_crc_DEseq_repressed = WC_DEseq_results[which(WC_DEseq_results$log2FoldChange < 0 & WC_DEseq_results$padj < 0.05 & WC_DEseq_results$gene_name %in% nxt1_crc_genes), "gene_name"]
+
+nxt1_crc_MS_induced = mass_spec_24hr[which(mass_spec_24hr$Fold.change..Log2. > 0 & mass_spec_24hr$pval < 0.05 & mass_spec_24hr$Gene.symbol %in% nxt1_crc_genes), "Gene.symbol"]
+nxt1_crc_MS_repressed = mass_spec_24hr[which(mass_spec_24hr$Fold.change..Log2. < 0 & mass_spec_24hr$pval < 0.05 & mass_spec_24hr$Gene.symbol %in% nxt1_crc_genes), "Gene.symbol"]
+
+write.table(nxt1_crc_DEseq_induced, file.path(expression_selection_dir, "nxt1_crc_DEseq_induced.tsv"), sep="\t", row.names=FALSE, col.names=FALSE)
+write.table(nxt1_crc_DEseq_repressed, file.path(expression_selection_dir, "nxt1_crc_DEseq_repressed.tsv"), sep="\t", row.names=FALSE, col.names=FALSE)
+write.table(nxt1_crc_MS_induced, file.path(expression_selection_dir, "nxt1_crc_MS_induced.tsv"), sep="\t", row.names=FALSE, col.names=FALSE)
+write.table(nxt1_crc_MS_repressed, file.path(expression_selection_dir, "nxt1_crc_MS_repressed.tsv"), sep="\t", row.names=FALSE, col.names=FALSE)
+```
+
+# Make volcano plots
+```{r}
+volcano_plot = function(data, gene_field, fc='log2FoldChange', p="padj", FCcutoff=.5, pCutoff=1e-3, mark=NULL, mark_name="marked genes", legendPos="right", ...) {
+  all_genes = data[, gene_field]
+  
+  alphamap = ifelse(all_genes %in% nxt1_bound_genes, .9, .35)
+  colormap = NULL
+  shapemap = NULL
+  
+  ind_rep_rat = function(gene_list) {
+    ind = length(data[which(data[fc] > FCcutoff & data[p] < pCutoff & all_genes %in% gene_list), gene_field])
+    rep = length(data[which(data[fc] < -FCcutoff & data[p] < pCutoff & all_genes %in% gene_list), gene_field])
+    return(round(ind/rep, digits=2))
+  }
+  
+  if (!is.null(mark)) {
+    colormap = ifelse(all_genes %in% mark, "purple", "gray")
+    colormap[is.na(colormap)] = "gray"
+    names(colormap)[colormap == "purple"] = paste0(mark_name, " [", ind_rep_rat(mark), "]")
+    names(colormap)[colormap == "gray"] = paste0("Other [", ind_rep_rat(setdiff(all_genes, mark)), "]")
+    alphamap = ifelse(all_genes %in% mark, 1, .2)
+  } else {
+    colormap = ifelse(all_genes %in% nxt1_crc_genes, "royalblue",
+                               ifelse(all_genes %in% nxt1_mycn_promoter_genes, "forestgreen",
+                                      ifelse(all_genes %in% nxt1_only_promoter_genes, "DarkRed",
+                                             ifelse(all_genes %in% nxt1_only_genes, "Red", "gray"))))
+    colormap[is.na(colormap)] = "gray"
+    
+    names(colormap)[colormap == "forestgreen"] = paste0(LABEL_NAMES$A, " [", ind_rep_rat(nxt1_mycn_promoter_genes), "]")
+    names(colormap)[colormap == "DarkRed"] = paste0(LABEL_NAMES$B, " [", ind_rep_rat(nxt1_only_promoter_genes), "]")
+    names(colormap)[colormap == "royalblue"] = paste0(LABEL_NAMES$C, " [", ind_rep_rat(nxt1_crc_genes), "]")
+    names(colormap)[colormap == "Red"] = paste0(LABEL_NAMES$D, " [", ind_rep_rat(nxt1_only_genes), "]")
+    names(colormap)[colormap == "gray"] = paste0(LABEL_NAMES$other, " [", ind_rep_rat(setdiff(all_genes, nxt1_bound_genes)), "]")
+  }
+  plot = suppressWarnings(
+         EnhancedVolcano(data, lab=all_genes, x=fc, y=p, legendPosition=legendPos,
+                         pCutoff=pCutoff, FCcutoff=FCcutoff,
+                         colCustom=colormap, colAlpha=alphamap, pointSize=2,
+                         shapeCustom=shapemap,
+                         drawConnectors = TRUE, widthConnectors = 0.5, # WARNING: only use connectors when there are few labels!
+                         selectLab=c(GOI, head(top_n(data, -10, get(p)), 10)[, gene_field]), labSize=4,
+                         caption=paste0("Total: ", nrow(data), " genes\n",
+                                        "Significant: ", nrow(data[which(abs(data[fc]) > FCcutoff & data[p] < pCutoff),]),
+                                        " genes [", ind_rep_rat(all_genes), " induced/repressed]\n",
+                                        "FC cutoff:", FCcutoff, "; p-value cutoff: ", pCutoff),
+                         ...)
+         )
+  return(plot)
+}
+```
+
+# ```{r, fig.height=5, fig.width=6}
+# volcano_plot(WC_DEseq_results, "gene_name", title="NXT1 degradation effect", subtitle="Differential expression (whole cell)", xlim=c(-8, 8), mark=dtag_overlap_genes, mark_name="dTAG-DMSO overlap peaks")
+# ```
+
+```{r, fig.height=10, fig.width=18}
+seperate_volcanos(WC_DEseq_results, "gene_name", title="NXT1 degradation effect", subtitle="Differential expression (whole cell)", xlim=c(-8, 8))
+```
+
+```{r, fig.height=10, fig.width=18}
+seperate_volcanos(Nucl_DEseq_results, "gene_name", title="NXT1 degradation effect", subtitle="Differential expression (nuclear)", xlim=c(-8, 8))
+```
+
+```{r, fig.height=10, fig.width=18}
+seperate_volcanos(Cyt_DEseq_results, "gene_name", title="NXT1 degradation effect", subtitle="Differential expression (cytoplasmic)", xlim=c(-8, 8))
+```
+
+```{r, fig.height=10, fig.width=18}
+seperate_volcanos(mass_spec_2hr, "Gene.symbol",
+              title="NXT1 degradation effect", subtitle="Mass spec (2hr)", p="pval", fc="Fold.change..Log2.",
+              FCcutoff=.1, pCutoff=.1, xlim=c(-3,3), mark="gc_exons")
+```
+
+```{r, fig.height=10, fig.width=18}
+seperate_volcanos(mass_spec_6hr, "Gene.symbol",
+              title="NXT1 degradation effect", subtitle="Mass spec (6hr)", p="pval", fc="Fold.change..Log2.",
+              FCcutoff=.05, pCutoff=.1, xlim=c(-3,3), mark="gc_exons")
+```
+
+```{r, fig.height=10, fig.width=18}
+seperate_volcanos(mass_spec_24hr, "Gene.symbol",
+              title="NXT1 degradation effect", subtitle="Mass spec (24hr)", p="pval", fc="Fold.change..Log2.",
+              FCcutoff=.1, pCutoff=.05, xlim=c(-4,2))#, mark="gc_exons")
+```
+
+# Combination plots
+```{r, fig.height=30, fig.width=12}
+p1 = volcano_plot(WC_DEseq_results, "gene_name", title="Whole Cell", subtitle="", xlim=c(-8, 8))
+p2 = volcano_plot(Nucl_DEseq_results, "gene_name", title="Nuclear", subtitle="", xlim=c(-8, 8))
+p3 = volcano_plot(Cyt_DEseq_results, "gene_name", title="Cytoplasmic", subtitle="", xlim=c(-8, 8))
+
+grid.arrange(p1, p2, p3, ncol=1, top=textGrob("RNAseq differential expression", just=c("center"), gp=gpar(fontsize=28)))
+```
+
+```{r, fig.height=30, fig.width=12}
+p1 = volcano_plot(mass_spec_2hr, "Gene.symbol",
+              title="2 hours", subtitle="", p="pval", fc="Fold.change..Log2.",
+              FCcutoff=.1, pCutoff=.1, xlim=c(-3,3))
+p2 = volcano_plot(mass_spec_6hr, "Gene.symbol",
+              title="6 hours", subtitle="", p="pval", fc="Fold.change..Log2.",
+              FCcutoff=.05, pCutoff=.1, xlim=c(-3,3))
+p3 = volcano_plot(mass_spec_24hr, "Gene.symbol",
+              title="24 hours", subtitle="", p="pval", fc="Fold.change..Log2.",
+              FCcutoff=.1, pCutoff=.05, xlim=c(-4,2))
+
+grid.arrange(p1, p2, p3, ncol=1, top=textGrob("Proteomics differential expression", just=c("center"), gp=gpar(fontsize=28)))
+```
+
+# Make general expression plots
+```{r}
+WC_DEseq_TPM = read.table(file.path(WC_DEseq_dir, "WC_DMSO.AB_dTAG.AB_b37_DESeq2_log2p1_tpm_data.txt"), sep="\t")
+Nucl_DEseq_TPM = read.table(file.path(Nucl_DEseq_dir, "Nucl_DMSO_dTAG_b37_DESeq2_log2p1_tpm_data.txt"), sep="\t")
+Cyt_DEseq_TPM = read.table(file.path(Cyt_DEseq_dir, "Cyt_DMSO_dTAG_b37_DESeq2_log2p1_tpm_data.txt"), sep="\t")
+WC_DEseq_TPM
+```
+
+```{r}
+# Read in data, correct the gene name column, add set info and convert to factor, finally convert from wide to long data
+make_tpm_plot = function(data, subtitle="") {
+  data = data %>% rownames_to_column("Id") %>%
+         separate(Id, c("gene_name", "gene_Id"), "_", convert=TRUE, extra="merge") %>% 
+         mutate(set = ifelse(gene_name %in% nxt1_mycn_promoter_genes, "A",
+                             ifelse(gene_name %in% nxt1_only_promoter_genes, "B",
+                                    ifelse(gene_name %in% nxt1_crc_genes, "C",
+                                           ifelse(gene_name %in% nxt1_only_genes, "D", "other")))),
+                # DMSO = rowMeans(grepl("DMSO", names(data))),
+                across(set, as.factor))# %>% 
+  data$DMSO = rowMeans(data[, grepl("DMSO", names(data))])
+  data$dTAG = rowMeans(data[, grepl("dTAG", names(data))])
+  data = data %>% gather(cell_type, TPM, DMSO, dTAG, factor_key=TRUE)
+  
+  dodge = position_dodge(width = 0.6)
+  plot = ggplot(data, aes(x=set, y=TPM, fill=cell_type)) + geom_violin(alpha=0.5, position = dodge) + geom_boxplot(width=0.2, position = dodge) + ggtitle(paste0("Average TPM for gene sets\n", subtitle))
+  return(plot)
+}
+```
+
+```{r}
+make_tpm_plot(WC_DEseq_TPM, "(whole cell)")
+make_tpm_plot(Nucl_DEseq_TPM, "(nuclear)")
+make_tpm_plot(Cyt_DEseq_TPM, "(cytoplasmic)")
+```
+
